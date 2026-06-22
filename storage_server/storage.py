@@ -53,7 +53,11 @@ async def save_chunk(data_dir: Path, chunk_id: str, data: bytes) -> Path:
     """Atomically persist chunk bytes to disk."""
     sanitized_id = sanitize_chunk_id(chunk_id)
     destination = chunk_path(data_dir, sanitized_id)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StorageIOError(f"Failed to create directory {destination.parent}: {exc}") from exc
 
     temp_path = destination.parent / f"{sanitized_id}.{uuid.uuid4().hex}.tmp"
     try:
