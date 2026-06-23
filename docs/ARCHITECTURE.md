@@ -1,32 +1,33 @@
 # Architecture
 
-This project implements a small distributed file system for text files with:
-- 1 KB fixed chunking
-- replication factor 2
-- one naming server for metadata
-- multiple storage servers for chunk bytes
-
 Contract reference: [CONTRACT.md](../CONTRACT.md).
 
 ## Component Overview
 
 ```mermaid
 flowchart LR
-    Client -->|HTTP JSON| Naming[Naming server / SQLite metadata]
-    Client -->|raw bytes| S1[Storage 1]
-    Client -->|raw bytes| S2[Storage 2]
-    Client -->|raw bytes| S3[Storage 3]
-    S1 -.register on startup.-> Naming
-    S2 -.register on startup.-> Naming
-    S3 -.register on startup.-> Naming
+    Client -->|"GET /placement, POST /register\nGET /locate, DELETE /file"| Naming[Naming server\nSQLite metadata]
+    Client -->|"PUT/GET/DELETE /chunk/{id}"| S1[Storage 1]
+    Client -->|"PUT/GET/DELETE /chunk/{id}"| S2[Storage 2]
+    Client -->|"PUT/GET/DELETE /chunk/{id}"| S3[Storage 3]
+    S1 -.POST /storage/register.-> Naming
+    S2 -.POST /storage/register.-> Naming
+    S3 -.POST /storage/register.-> Naming
 ```
 
-## Why This Design
+**Naming server** (`naming_server/app.py`) — metadata authority. Owns `files`, `chunks`, and `storage_servers` tables in SQLite. Never stores chunk bytes.
 
-- **Metadata and data are separated.** The naming server stores metadata tables (`files`, `chunks`, `storage_servers`) and never stores chunk bytes, as defined in `init_db()` in [naming_server/app.py](../naming_server/app.py).
-- **Fixed-size chunks simplify placement.** The 1 KB contract size gives uniform chunk units for round-robin placement and reassembly.
-- **Placement is intentionally simple.** `GET /placement/{num_chunks}` assigns replicas with round-robin over registered storage IDs in [naming_server/app.py](../naming_server/app.py) (`placement()`).
-- **Chunk writes are atomic on storage nodes.** `save_chunk()` writes to a temp file and then calls `os.replace(...)` in [storage_server/storage.py](../storage_server/storage.py), preventing half-written visible chunks.
+**Storage servers** (`storage_server/`) — raw bytes on disk. Each node self-registers with naming on startup via a background task (`_register_with_naming`, `storage_server/main.py:35–69`), retrying up to 10 times so a slow naming startup never blocks chunk serving.
+
+**Client** (`client.py`, `client_logic.py`) — splits files, drives placement and replication, reassembles on read.
+
+## Design Decisions
+
+- **Metadata/data split.** Naming holds only chunk-to-server mappings; storage holds only bytes. Keeps naming small and SQLite-viable.
+- **Fixed 1 KB chunks.** Uniform size makes round-robin placement equal-weight and makes reassembly index-driven. Cost: metadata row per chunk; acceptable for the text-file scope of this project.
+- **Naming server owns placement.** The client always fetches placement from `GET /placement/{n}` (`naming_server/app.py:94–108`) rather than maintaining a local server list. Adding a storage replica only requires registering it.
+- **Atomic writes on storage.** `save_chunk()` (`storage_server/storage.py:52–77`) writes to a temp file then calls `os.replace()`, so a process crash cannot leave a half-written chunk visible.
+- **Atomic reads on client.** `read_file()` (`client_logic.py:424–432`) assembles chunks into a temp file, then calls `os.replace()` so an interrupted download never corrupts the output path.
 
 ## Write Path
 
@@ -37,25 +38,34 @@ sequenceDiagram
     participant A as Storage A
     participant B as Storage B
     C->>N: GET /placement/N
-    N-->>C: chunk -> [server_ids]
-    par replica 1
-        C->>A: PUT /chunk/file_0
+    N-->>C: [{index, server_ids, server_urls}]
+    par for each chunk: replica 1
+        C->>A: PUT /chunk/filename_i
     and replica 2
-        C->>B: PUT /chunk/file_0
+        C->>B: PUT /chunk/filename_i
     end
-    C->>N: POST /register
+    C->>N: POST /register {file, size, chunks}
 ```
+
+If any chunk upload fails, `_cleanup_uploads()` (`client_logic.py:217–226`) attempts best-effort deletion of already-uploaded chunks before raising.
 
 ## Read Path
 
-- Client requests locations from `GET /locate/{file}` on the naming server.
-- Naming returns chunk indices with storage IDs/URLs from metadata in [naming_server/app.py](../naming_server/app.py) (`locate()`).
-- Client fetches chunk bytes from storage servers with `GET /chunk/{id}` from [storage_server/main.py](../storage_server/main.py).
-- If one replica is unavailable, the contract requires trying the other replica before failing ([CONTRACT.md](../CONTRACT.md)).
+- `GET /locate/{file}` returns chunk list with `server_ids` and `server_urls`.
+- Client fetches each chunk via `_fetch_chunk()` (`client_logic.py:362–390`), trying replicas in order. Network errors, timeouts, and 5xx responses trigger a retry on the next replica. Only 404 with no remaining replicas is a hard failure.
+
+## Delete Path
+
+- `DELETE /file/{file}` on naming drops metadata and returns chunk IDs with server locations.
+- Client fires `DELETE /chunk/{id}` on every listed replica; network failures are logged and skipped (best-effort).
+
+## Docker Layout
+
+`docker-compose.yml` runs 1 naming + 3 storage servers + an on-demand client container. Naming metadata (`naming-db` volume) and each storage node's chunks (`storageN-data` volumes) persist across restarts. Storage containers have healthchecks; the client `depends_on` all of them being healthy before it runs.
 
 ## Deliberate Non-Goals In This Build
 
 - No automated re-replication after a storage node failure.
 - No metadata replication for the naming server.
-- No chunk checksum verification in storage APIs.
-- No authn/authz layer in service endpoints.
+- No chunk checksum verification.
+- No authn/authz layer.

@@ -1,82 +1,57 @@
 # Fault Tolerance Analysis
 
-This document covers the four M5 fault-tolerance questions for the current implementation.
-
-Primary references:
-- [CONTRACT.md](../CONTRACT.md)
-- [naming_server/app.py](../naming_server/app.py)
-- [storage_server/main.py](../storage_server/main.py)
-- [storage_server/storage.py](../storage_server/storage.py)
+References: [CONTRACT.md](../CONTRACT.md), `naming_server/app.py`, `storage_server/main.py`, `storage_server/storage.py`, `client_logic.py`
 
 ## Q1: One Storage Server Is Down
 
-### What Happens
+**Reads** — `_fetch_chunk()` (`client_logic.py:362–390`) tries each replica URL in order. A network error, timeout, or 5xx response moves to the next replica without failing the read. Only when all replicas for a chunk fail does it raise `DownloadError`. With RF=2, one downed node means one replica per chunk survives and reads complete normally.
 
-- Reads can still succeed if each requested chunk has at least one reachable replica.
-- Writes can degrade or fail if available storage servers drop below the replication factor.
+**Writes (new uploads)** — `GET /placement/{n}` (`naming_server/app.py:101–102`) returns 503 when the live pool is smaller than `REPLICATION_FACTOR`. A single failed node drops the pool from 3 to 2; with `REPLICATION_FACTOR=2` that still satisfies the check, so new writes continue. If the pool drops below RF, placement is refused.
 
-### Why
+**Already-stored data** — chunk files on surviving nodes are untouched. When the failed node restarts, it re-registers with naming and its chunks are immediately available again.
 
-- Contract behavior requires trying the other replica when one read path fails ([CONTRACT.md](../CONTRACT.md)).
-- Naming placement enforces `len(servers) >= REPLICATION_FACTOR`; otherwise it returns `503` in `placement()` in [naming_server/app.py](../naming_server/app.py).
-- Storage health endpoint remains available for live nodes via `/health` in [storage_server/main.py](../storage_server/main.py).
-
-### Read Failover Flow
+**Empirical evidence** — `demo.sh:86–93` stops `storage2` after upload, then runs a full read and diffs the result byte-for-byte against the original.
 
 ```mermaid
 flowchart TD
     Start[Client GET chunk] --> A[Try replica A]
-    A -->|ok| Done[Return bytes]
-    A -->|fail| B[Try replica B]
-    B -->|ok| Done
-    B -->|fail| Err[503 no reachable replica]
+    A -->|200| Done[Return bytes]
+    A -->|"network/timeout/5xx"| B[Try replica B]
+    B -->|200| Done
+    B -->|fail| Err[DownloadError / 503]
 ```
 
 ## Q2: Naming Server Is Down
 
-### What Happens
+All client operations fail immediately:
 
-- Client-facing file operations fail because placement, locate, and metadata registration all depend on naming endpoints.
-- Storage servers may still answer direct `GET /chunk/{id}`, but file-to-chunk mapping is unavailable to clients.
+- `create` — cannot fetch placement; upload aborted before any chunk is sent.
+- `read` — cannot locate chunks; fails before any storage request.
+- `delete` — cannot fetch chunk locations from naming; fails.
+- `size` — cannot query metadata; fails.
 
-### Why
+Storage nodes keep serving `GET /chunk/{id}` directly, but without naming there is no way to map a filename to an ordered chunk list, so chunk data is practically inaccessible.
 
-- Naming server is the only metadata authority in this design (`files`, `chunks`, `storage_servers` created in `init_db()` in [naming_server/app.py](../naming_server/app.py)).
-- Without naming, there is no authoritative source for chunk ordering and replica locations per file.
+**Recovery** — naming is a single process backed by a SQLite file on a named volume (`naming-db`). Restarting the container restores full operation with no data loss as long as the volume is intact.
 
-### Recovery
+## Q3: Simultaneous Storage Failures — Tolerance Bound
 
-- If the naming process restarts and the SQLite database file remains intact, metadata becomes available again.
-- If naming metadata storage is lost/corrupted, chunk bytes can remain on storage nodes but are not practically discoverable by filename.
+The system tolerates up to `REPLICATION_FACTOR − 1` simultaneous storage failures **per chunk**. With the default `REPLICATION_FACTOR=2`, that is exactly one.
 
-## Q3: Replication Tolerance (`REPLICATION_FACTOR - 1`)
+Round-robin placement (`naming_server/app.py:104–107`) assigns chunk `i` to servers at positions `i % N` and `(i+1) % N` in the registered pool. With 3 nodes:
 
-### Result
+- Losing 1 of 3 nodes → at most half of chunks lose one replica; all chunks retain at least one → reads survive.
+- Losing 2 of 3 nodes → chunks assigned to those two specific nodes lose both replicas → those chunks are unreadable even if the third node is up.
 
-- Fault tolerance is per chunk: with default `REPLICATION_FACTOR=2`, each chunk can tolerate one replica loss.
+This is a per-chunk bound, not a per-node bound.
 
-### Why
+## Q4: Recoverable vs. Data-Loss Scenarios
 
-- Placement assigns each chunk to two distinct storage IDs using round-robin offset logic in `placement()` in [naming_server/app.py](../naming_server/app.py).
-- As long as one assigned replica remains reachable, that chunk can still be served.
-- If both replicas for any chunk are unavailable, that chunk is unavailable, and full-file reconstruction may fail.
-
-## Q4: Recoverable vs Data-Loss Scenarios
-
-### Recoverable
-
-- **Storage process crash, disk intact:** recoverable after process restart.
-- **Interrupted writes:** mitigated by temp-file + `os.replace(...)` write path in `save_chunk()` in [storage_server/storage.py](../storage_server/storage.py).
-- **Single node data loss with surviving replica:** recoverable in principle by re-copying from the remaining replica (not automated in current code).
-
-### Data-Loss / Catastrophic Cases
-
-- **Both replicas of a chunk lost:** that chunk is lost.
-- **Naming metadata loss/corruption:** mapping from file name to chunk list is lost.
-- **Client crash before `/register`:** already uploaded chunks may remain as unreferenced data because metadata registration did not complete.
-
-## Current Limits Relevant To Fault Tolerance
-
-- No background re-replication service.
-- No replicated naming metadata store.
-- No chunk checksum validation in API flow.
+| Scenario | Outcome |
+|---|---|
+| Storage process crash, disk intact | Recoverable. `os.replace()` in `save_chunk()` (`storage_server/storage.py:62`) means no torn chunks on disk. Restart restores full access. |
+| Storage node disk wiped, other replica alive | Recoverable in principle — data is on the surviving replica. **Not automated**: no re-replication in this build. Manual copy needed. |
+| Both replicas of a chunk lost | Data loss for that chunk. The rest of the file's chunks are still readable. |
+| Naming SQLite lost or corrupted | Catastrophic for metadata. Chunk bytes survive on storage nodes but no filename-to-chunk mapping exists. |
+| Client crash mid-upload | `_cleanup_uploads()` (`client_logic.py:217–226`) is called on upload failure, attempting best-effort `DELETE` of already-sent chunks. A hard crash (SIGKILL) skips cleanup, leaving orphan chunks on storage with no GC mechanism. |
+| Client crash mid-read | Output path is untouched — reads go to a temp file, `os.replace()` is called only on success (`client_logic.py:432`). Partial temp file is removed in the `except` block (`client_logic.py:438–440`). |

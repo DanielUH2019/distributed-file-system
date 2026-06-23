@@ -36,8 +36,8 @@ Task split across the 5-person team is in [TASKS.md](TASKS.md).
 |------------------|-------|----------------|
 | Naming server    | M1    | done           |
 | Storage server   | M2    | done           |
-| Client           | M3    | todo           |
-| Docker / compose | M4    | todo           |
+| Client           | M3    | done           |
+| Docker / compose | M4    | done           |
 | Arch doc / FT    | M5    | done           |
 
 ## Develop (uv)
@@ -50,31 +50,8 @@ uv run uvicorn naming_server.app:app --reload --port 8000   # run naming server
 
 Then open <http://localhost:8000/docs> for interactive API docs.
 
-## How to use (current endpoints)
-
-The user-facing `client.py` CLI belongs to M3 and is not in this repo yet.  
-For now, you can exercise the live contract endpoints directly:
-
-```bash
-# 1) Register a storage node in naming metadata
-curl -X POST "http://localhost:8000/storage/register" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"id\":\"storage-1\",\"url\":\"http://localhost:9000\"}"
-
-# 2) Ask naming server for chunk placement (RF=2 by default)
-curl "http://localhost:8000/placement/3"
-```
-
 ## Documentation
 
 - [CONTRACT.md](CONTRACT.md) — frozen inter-service API
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture and design choices
-- [docs/FAULT_TOLERANCE.md](docs/FAULT_TOLERANCE.md) — fault-tolerance analysis
-
-Limitation: naming server is a single metadata authority in this build.
-
-Once Docker is wired up (M4):
-
-```bash
-docker compose up --build
-```
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — component design, write/read paths, design decisions
+- [docs/FAULT_TOLERANCE.md](docs/FAULT_TOLERANCE.md) — fault-tolerance analysis (the 4 graded questions)
