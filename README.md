@@ -35,8 +35,8 @@ Task split across the 5-person team is in [TASKS.md](TASKS.md).
 | Component        | Owner | State          |
 |------------------|-------|----------------|
 | Naming server    | M1    | done           |
-| Storage server   | M2    | todo           |
-| Client           | M3    | todo           |
+| Storage server   | M2    | done           |
+| Client           | M3    | done           |
 | Docker / compose | M4    | todo           |
 | Arch doc / FT    | M5    | todo           |
 
