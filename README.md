@@ -38,7 +38,7 @@ Task split across the 5-person team is in [TASKS.md](TASKS.md).
 | Storage server   | M2    | done           |
 | Client           | M3    | done           |
 | Docker / compose | M4    | done           |
-| Arch doc / FT    | M5    | in progress    |
+| Arch doc / FT    | M5    | done           |
 
 ## How to run (Docker)
 
@@ -104,6 +104,12 @@ uv sync                                    # install deps (or: python -m venv .v
 uv run pytest                              # run the full test suite
 uv run uvicorn naming_server.app:app --reload --port 8000   # run naming server
 ```
+
+## Documentation
+
+- [CONTRACT.md](CONTRACT.md) — frozen inter-service API
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — component design, write/read paths, design decisions
+- [docs/FAULT_TOLERANCE.md](docs/FAULT_TOLERANCE.md) — fault-tolerance analysis (the 4 graded questions)
 
 ## Design note: placement authority
 
