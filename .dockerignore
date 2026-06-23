@@ -1,0 +1,24 @@
+# Keep build context small and reproducible
+.git
+.gitignore
+.venv
+__pycache__
+*.py[oc]
+*.egg-info
+build/
+dist/
+wheels/
+
+# Local data / databases that must never bake into an image
+data/
+*.db
+naming.db
+
+# Tests & docs aren't needed at runtime
+tests/
+docs/
+*.md
+
+# Local dev scratch
+files/
+.python-version

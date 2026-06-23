@@ -1,0 +1,23 @@
+# DFS client CLI. Run-to-completion container, one command per invocation:
+#   docker compose run --rm client create /files/notes.txt
+# Build context = repo root:  docker build -f Dockerfile.client .
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    NAMING_URL=http://naming:8000 \
+    REPLICATION_FACTOR=2
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Client uses flat top-level modules, so they sit directly in WORKDIR.
+COPY client.py client_logic.py config.py exceptions.py ./
+
+# /files is the bind mount for local input/output files.
+RUN mkdir -p /files
+
+ENTRYPOINT ["python", "client.py"]
+CMD ["--help"]

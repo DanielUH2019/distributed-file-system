@@ -1,0 +1,121 @@
+# Distributed File System — full stack:
+#   1 naming server (metadata authority) + 3 storage servers (RF=2) + on-demand client.
+#
+# Bring the cluster up:        docker compose up --build -d
+# Run a client command:       docker compose run --rm client create /files/notes.txt
+# End-to-end demo / test:      ./demo.sh
+#
+# Storage IDs are storage-1/2/3; each self-registers with the naming server on
+# startup, so naming is the authority on the live pool and chunk placement.
+
+services:
+  naming:
+    build:
+      context: .
+      dockerfile: naming_server/Dockerfile
+    environment:
+      DB_PATH: /data/naming.db
+      REPLICATION_FACTOR: 2
+    ports:
+      - "8000:8000"
+    volumes:
+      - naming-db:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:8000/health').status==200 else sys.exit(1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  storage1:
+    build:
+      context: .
+      dockerfile: storage_server/Dockerfile
+    environment:
+      STORAGE_ID: storage-1
+      STORAGE_PORT: 9000
+      DATA_DIR: /data
+      NAMING_URL: http://naming:8000
+      STORAGE_URL: http://storage1:9000
+    volumes:
+      - storage1-data:/data
+    depends_on:
+      naming:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9000/health').status==200 else sys.exit(1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  storage2:
+    build:
+      context: .
+      dockerfile: storage_server/Dockerfile
+    environment:
+      STORAGE_ID: storage-2
+      STORAGE_PORT: 9000
+      DATA_DIR: /data
+      NAMING_URL: http://naming:8000
+      STORAGE_URL: http://storage2:9000
+    volumes:
+      - storage2-data:/data
+    depends_on:
+      naming:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9000/health').status==200 else sys.exit(1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  storage3:
+    build:
+      context: .
+      dockerfile: storage_server/Dockerfile
+    environment:
+      STORAGE_ID: storage-3
+      STORAGE_PORT: 9000
+      DATA_DIR: /data
+      NAMING_URL: http://naming:8000
+      STORAGE_URL: http://storage3:9000
+    volumes:
+      - storage3-data:/data
+    depends_on:
+      naming:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://localhost:9000/health').status==200 else sys.exit(1)"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+
+  # On-demand CLI. Not a long-running service; invoke per command with
+  #   docker compose run --rm client <create|read|delete|size> ...
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    environment:
+      NAMING_URL: http://naming:8000
+      REPLICATION_FACTOR: 2
+    volumes:
+      - ./files:/files
+    depends_on:
+      naming:
+        condition: service_healthy
+      storage1:
+        condition: service_healthy
+      storage2:
+        condition: service_healthy
+      storage3:
+        condition: service_healthy
+
+volumes:
+  naming-db:
+  storage1-data:
+  storage2-data:
+  storage3-data:
