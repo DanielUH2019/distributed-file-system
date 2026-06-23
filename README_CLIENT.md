@@ -3,20 +3,24 @@
 User-facing CLI for the distributed file system. Hides chunking, replication, and
 storage placement behind four commands.
 
+Chunk placement and chunk locations come from the **naming server** (the metadata
+authority): `create` asks `GET /placement/{n}` where to store each chunk, and
+`read`/`delete` use the locations returned by `/locate` and `/file`. The client
+therefore does not need to know the storage pool up front.
+
 ## Environment variables
 
 | Variable            | Required | Default               | Description |
 |---------------------|----------|-----------------------|-------------|
 | `NAMING_URL`        | no       | `http://naming:8000`  | Naming server base URL |
 | `REPLICATION_FACTOR`| no       | `2`                   | Number of replicas per chunk |
-| `STORAGE_SERVERS`   | yes      | —                     | Comma-separated storage URLs |
+| `STORAGE_SERVERS`   | no       | —                     | Optional fallback only: comma-separated storage URLs, used to resolve URLs if the naming server omits them |
 | `REQUEST_TIMEOUT`   | no       | `10.0`                | HTTP timeout in seconds |
 
 Example:
 
 ```bash
 export NAMING_URL=http://localhost:8000
-export STORAGE_SERVERS=http://storage1:9000,http://storage2:9000,http://storage3:9000
 export REPLICATION_FACTOR=2
 ```
 

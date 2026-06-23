@@ -8,3 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local DFS data / databases
+*.db
+naming.db
+data/
+
+# Client bind-mount working dir: ignore contents, keep the dir
+files/*
+!files/.gitkeep

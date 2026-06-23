@@ -32,7 +32,9 @@ class Settings(BaseSettings):
 
     naming_url: str = Field(default="http://naming:8000", alias="NAMING_URL")
     replication_factor: int = Field(default=2, alias="REPLICATION_FACTOR")
-    storage_servers: str = Field(alias="STORAGE_SERVERS")
+    # Optional fallback only. Placement and chunk locations come from the naming
+    # server; this is used solely to resolve URLs if the naming server omits them.
+    storage_servers: str = Field(default="", alias="STORAGE_SERVERS")
     request_timeout: float = Field(default=10.0, alias="REQUEST_TIMEOUT")
 
     @field_validator("naming_url", mode="before")
@@ -60,7 +62,13 @@ class Settings(BaseSettings):
         ]
 
     def storage_url_map(self) -> dict[str, str]:
-        """Map storage server IDs to base URLs."""
+        """Map storage server IDs to base URLs (empty when no fallback is set).
+
+        Locations normally come from the naming server; this fallback only
+        matters if ``STORAGE_SERVERS`` is explicitly configured.
+        """
+        if not self.storage_servers.strip():
+            return {}
         return {server.id: server.url for server in self.parsed_storage_servers()}
 
 

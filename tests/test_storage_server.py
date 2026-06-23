@@ -229,6 +229,62 @@ def test_concurrent_puts_same_chunk(client: TestClient, data_dir: Path) -> None:
     assert temp_files == []
 
 
+# ---- self-registration --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_register_with_naming_posts_id_and_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from storage_server import main
+    from storage_server.config import Settings
+
+    cfg = Settings(
+        STORAGE_ID="storage-1",
+        STORAGE_PORT=9000,
+        DATA_DIR="/tmp/x",
+        NAMING_URL="http://naming:8000",
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def post(self, url: str, json: dict[str, str]) -> FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    await main._register_with_naming(cfg)
+
+    assert captured["url"] == "http://naming:8000/storage/register"
+    assert captured["json"] == {"id": "storage-1", "url": "http://storage-1:9000"}
+
+
+@pytest.mark.asyncio
+async def test_register_with_naming_skipped_when_no_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from storage_server import main
+    from storage_server.config import Settings
+
+    cfg = Settings(STORAGE_ID="storage-1", DATA_DIR="/tmp/x")  # no NAMING_URL
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("should not contact naming when NAMING_URL is unset")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", _boom)
+    await main._register_with_naming(cfg)  # must be a no-op
+
+
 @pytest.mark.asyncio
 async def test_load_and_delete_roundtrip(data_dir: Path) -> None:
     await save_chunk(data_dir, "round_0", b"roundtrip")
