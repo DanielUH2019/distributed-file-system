@@ -70,6 +70,23 @@ def test_split_file() -> None:
 @respx.mock
 @pytest.mark.asyncio
 async def test_create_success(text_file: Path, settings: Settings) -> None:
+    # naming server is the authority on placement; the client asks it where to
+    # store each chunk and uses the URLs it returns.
+    placement_route = respx.get("http://naming:8000/placement/1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "replication_factor": 2,
+                "chunks": [
+                    {
+                        "index": 0,
+                        "server_ids": ["storage-1", "storage-2"],
+                        "server_urls": ["http://storage1:9000", "http://storage2:9000"],
+                    }
+                ],
+            },
+        )
+    )
     put_routes = [
         respx.put(f"http://storage{i}:9000/chunk/notes.txt_0").mock(
             return_value=httpx.Response(200)
@@ -84,12 +101,13 @@ async def test_create_success(text_file: Path, settings: Settings) -> None:
         remote_name = await create_file(text_file, settings=settings, client=client)
 
     assert remote_name == "notes.txt"
+    assert placement_route.called
     assert all(route.called for route in put_routes)
     assert register_route.called
     payload = json.loads(register_route.calls.last.request.content)
     assert payload["file"] == "notes.txt"
     assert payload["size"] == 100
-    assert payload["chunks"] == [{"index": 0, "server_ids": ["storage1", "storage2"]}]
+    assert payload["chunks"] == [{"index": 0, "server_ids": ["storage-1", "storage-2"]}]
 
 
 @respx.mock
@@ -100,6 +118,21 @@ async def test_create_partial_failure_attempts_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("client_logic.BACKOFF_DELAYS", (0.0, 0.0, 0.0))
+    respx.get("http://naming:8000/placement/1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "replication_factor": 2,
+                "chunks": [
+                    {
+                        "index": 0,
+                        "server_ids": ["storage-1", "storage-2"],
+                        "server_urls": ["http://storage1:9000", "http://storage2:9000"],
+                    }
+                ],
+            },
+        )
+    )
     respx.put("http://storage1:9000/chunk/notes.txt_0").mock(return_value=httpx.Response(200))
     respx.put("http://storage2:9000/chunk/notes.txt_0").mock(return_value=httpx.Response(500))
     cleanup_route = respx.delete("http://storage1:9000/chunk/notes.txt_0").mock(

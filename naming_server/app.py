@@ -9,11 +9,14 @@ import os
 import sqlite3
 from contextlib import contextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 DB_PATH = os.environ.get("DB_PATH", "naming.db")
 REPLICATION_FACTOR = int(os.environ.get("REPLICATION_FACTOR", "2"))
+# How long to wait when probing a storage server's /health during placement.
+HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "1.5"))
 
 app = FastAPI(title="Naming Server")
 
@@ -92,18 +95,41 @@ def list_storage():
     return {"servers": [dict(r) for r in rows]}
 
 
+def _is_alive(url: str) -> bool:
+    """Probe a storage server's /health so placement skips dead replicas."""
+    try:
+        resp = httpx.get(f"{url.rstrip('/')}/health", timeout=HEALTH_TIMEOUT)
+        return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 @app.get("/placement/{num_chunks}")
 def placement(num_chunks: int):
     """Tell the client where to put each chunk: round-robin over the live pool,
-    REPLICATION_FACTOR distinct servers per chunk."""
+    REPLICATION_FACTOR distinct servers per chunk. Each chunk entry includes both
+    the chosen server ids and their URLs so the client can PUT without a second call.
+
+    Only servers that respond to /health are used, so placement never targets a
+    storage server that is currently down."""
     with db() as conn:
-        servers = [r["id"] for r in conn.execute("SELECT id FROM storage_servers")]
+        rows = conn.execute("SELECT id, url FROM storage_servers ORDER BY id").fetchall()
+    live = [r for r in rows if _is_alive(r["url"])]
+    servers = [r["id"] for r in live]
+    urls = {r["id"]: r["url"] for r in live}
     if len(servers) < REPLICATION_FACTOR:
-        raise HTTPException(503, f"need >= {REPLICATION_FACTOR} storage servers, have {len(servers)}")
+        raise HTTPException(
+            503,
+            f"need >= {REPLICATION_FACTOR} live storage servers, have {len(servers)}",
+        )
     plan = []
     for i in range(num_chunks):
         ids = [servers[(i + r) % len(servers)] for r in range(REPLICATION_FACTOR)]
-        plan.append({"index": i, "server_ids": ids})
+        plan.append({
+            "index": i,
+            "server_ids": ids,
+            "server_urls": [urls[s] for s in ids],
+        })
     return {"chunks": plan, "replication_factor": REPLICATION_FACTOR}
 
 

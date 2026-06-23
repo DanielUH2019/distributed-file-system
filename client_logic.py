@@ -247,12 +247,46 @@ async def _upload_chunk_replicas(
         raise UploadError(str(exc)) from exc
 
 
+def count_chunks(file_size: int, chunk_size: int = CHUNK_SIZE) -> int:
+    """Number of chunks a file of ``file_size`` bytes splits into (min 1)."""
+    if file_size <= 0:
+        return 1
+    return (file_size + chunk_size - 1) // chunk_size
+
+
+async def _fetch_placement(
+    client: httpx.AsyncClient,
+    naming_url: str,
+    num_chunks: int,
+) -> list[dict[str, Any]]:
+    """Ask the naming server where each chunk should be stored.
+
+    The naming server is the authority on the live storage pool and chunk
+    placement; it returns both server ids and their URLs per chunk.
+    """
+    url = f"{naming_url}/placement/{num_chunks}"
+    response = await _request_with_backoff(client, "GET", url)
+    if response.status_code != 200:
+        raise UploadError(f"placement failed with {response.status_code}: {response.text}")
+    chunks = response.json().get("chunks", [])
+    if len(chunks) != num_chunks:
+        raise UploadError(
+            f"naming returned {len(chunks)} placements, expected {num_chunks}"
+        )
+    return sorted(chunks, key=lambda item: item["index"])
+
+
 async def create_file(
     filepath: Path,
     settings: Settings | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> str:
-    """Upload a local text file to the distributed file system."""
+    """Upload a local text file to the distributed file system.
+
+    Placement is decided by the naming server (the metadata authority on the
+    live storage pool), so the client does not need to know which storage
+    servers exist up front.
+    """
     cfg = settings or get_settings()
     validate_text_file(filepath)
     remote_name = sanitize_filename(filepath.name)
@@ -262,15 +296,20 @@ async def create_file(
         client = httpx.AsyncClient(timeout=cfg.request_timeout)
 
     uploaded: list[tuple[str, str]] = []
-    servers = cfg.parsed_storage_servers()
     file_size = filepath.stat().st_size
 
     try:
         assert client is not None
+        num_chunks = count_chunks(file_size)
+        placements = await _fetch_placement(client, cfg.naming_url, num_chunks)
         chunk_placements: list[dict[str, Any]] = []
 
         for index, block in iter_file_chunks(filepath):
-            selected = round_robin_placement(index, servers, cfg.replication_factor)
+            placement = placements[index]
+            selected = [
+                StorageServer(id=sid, url=url)
+                for sid, url in zip(placement["server_ids"], placement["server_urls"])
+            ]
             name = chunk_id(remote_name, index)
             try:
                 await _upload_chunk_replicas(client, selected, name, block, uploaded)
@@ -278,7 +317,7 @@ async def create_file(
                 await _cleanup_uploads(client, uploaded)
                 raise
             chunk_placements.append(
-                {"index": index, "server_ids": [server.id for server in selected]}
+                {"index": index, "server_ids": placement["server_ids"]}
             )
 
         register_payload = {

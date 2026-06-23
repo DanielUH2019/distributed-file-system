@@ -15,24 +15,28 @@ happens in parallel. Any change needs whole-team sign-off because it breaks some
 
 | Service        | Default URL            | Env vars                                   |
 |----------------|------------------------|--------------------------------------------|
-| Naming server  | `http://naming:8000`   | `DB_PATH`, `REPLICATION_FACTOR`            |
-| Storage server | `http://storageN:9000` | `STORAGE_ID`, `STORAGE_PORT`, `DATA_DIR`, `NAMING_URL` |
+| Naming server  | `http://naming:8000`   | `DB_PATH`, `REPLICATION_FACTOR`, `HEALTH_TIMEOUT` |
+| Storage server | `http://storageN:9000` | `STORAGE_ID`, `STORAGE_PORT`, `DATA_DIR`, `NAMING_URL`, `STORAGE_URL` |
 
-Storage servers self-register on startup: `POST /storage/register {id, url}`.
+Storage servers self-register on startup: `POST /storage/register {id, url}`
+(skipped when `NAMING_URL` is unset, e.g. tests). `STORAGE_URL` is the address
+peers use to reach the node; it defaults to `http://{STORAGE_ID}:{STORAGE_PORT}`.
 
 ## Naming server API (owner: M1) — implemented
 
 ```
 POST   /storage/register   {id, url}                    -> {ok:true}
 GET    /storage                                          -> {servers:[{id,url}]}
-GET    /placement/{n}       -> {chunks:[{index, server_ids:[..]}], replication_factor}
+GET    /placement/{n}       -> {chunks:[{index, server_ids, server_urls}], replication_factor}
 POST   /register           {file, size, chunks:[{index, server_ids:[..]}]} -> {ok:true}
 GET    /locate/{file}       -> {file, size, chunks:[{index, server_ids, server_urls}]}
 GET    /size/{file}         -> {file, size}
 DELETE /file/{file}         -> {file, chunks:[{id, server_ids, server_urls}]}
 GET    /health              -> {status:"ok"}
 ```
-Placement = round-robin over the live pool, RF distinct servers per chunk.
+Placement = round-robin over the **live** pool (servers that answer `/health`),
+RF distinct servers per chunk; `503` if fewer than RF are reachable. The
+response includes each chunk's `server_urls` so the client can PUT directly.
 
 ## Storage server API (owner: M2)
 
