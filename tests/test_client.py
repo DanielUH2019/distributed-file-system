@@ -15,9 +15,10 @@ from client_logic import (
     read_file,
     round_robin_placement,
     split_file,
+    validate_text_file,
 )
 from config import CHUNK_SIZE, Settings, StorageServer
-from exceptions import UploadError
+from exceptions import InvalidFileTypeError, UploadError
 
 STORAGE_URLS = "http://storage1:9000,http://storage2:9000,http://storage3:9000"
 SERVERS = [
@@ -65,6 +66,21 @@ def test_split_file() -> None:
     assert len(chunks[0]) == 1024
     assert len(chunks[1]) == 1024
     assert len(chunks[2]) == 512
+
+
+def test_validate_text_file_accepts_supported_text_extension(tmp_path: Path) -> None:
+    path = tmp_path / "notes.md"
+    path.write_text("distributed file system notes", encoding="utf-8")
+
+    validate_text_file(path)
+
+
+def test_validate_text_file_rejects_non_text_extension(tmp_path: Path) -> None:
+    path = tmp_path / "diagram.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    with pytest.raises(InvalidFileTypeError):
+        validate_text_file(path)
 
 
 @respx.mock
